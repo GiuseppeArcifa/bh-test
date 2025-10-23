@@ -22,7 +22,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    if: ${{ github.repository == 'newfold-labs/wp-plugin-bluehost' }}
     steps:
 
       - name: Checkout
@@ -31,7 +30,6 @@ jobs:
           persist-credentials: false
 
       - name: Validate version number
-        if: ${{ (github.repository == 'newfold-labs/wp-plugin-bluehost') }}
         env:
           PLUGIN_NAME: ${{ vars.PLUGIN_NAME }}
         run: |
@@ -86,7 +84,6 @@ jobs:
           npm --version
 
       - name: Validate composer.json and composer.lock
-        if: ${{ github.repository == 'newfold-labs/wp-plugin-bluehost' }}
         run: composer validate
 
       - name: Install PHP Dependencies
