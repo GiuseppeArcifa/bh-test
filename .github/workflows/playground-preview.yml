@@ -3,16 +3,11 @@ name: WordPress Playground Preview (PR & Comments)
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  issue_comment:
-    types: [created, edited]
-
-permissions: {}
 
 jobs:
   playground-preview:
     runs-on: ubuntu-latest
-
-    if: github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && github.event.issue.pull_request)
+    if: github.event.pull_request.head.repo.fork == false
 
     permissions:
       contents: read
