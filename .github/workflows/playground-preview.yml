@@ -113,7 +113,8 @@ jobs:
           PR_NUM="$PR_NUMBER"
           ZIP_NAME="bluehost-pr-${PR_NUM}.zip"
 
-          cat > excludes.txt <<'EOF'
+          # Crea excludes.txt DENTRO la cartella DIST
+          cat > "$DIST/excludes.txt" <<'EOF'
           .env
           .env.*
           .npmrc
@@ -129,10 +130,12 @@ jobs:
           **/.idea/**
           EOF
 
+          # Ora zippa da dentro DIST usando il file excludes.txt locale
           cd "$DIST"
-          zip -r -9 "../${ZIP_NAME}" . -x@../excludes.txt
+          zip -r -9 "../${ZIP_NAME}" . -x@excludes.txt
           cd -
 
+          # Sposta lo zip appena creato in gh-pages/previews
           mv "${DIST}/../${ZIP_NAME}" "gh-pages/previews/${ZIP_NAME}"
 
           SIZE=$(du -h "gh-pages/previews/${ZIP_NAME}" | cut -f1)
@@ -140,7 +143,6 @@ jobs:
           echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
           echo "zip_size=${SIZE}" >> "$GITHUB_OUTPUT"
 
-          # index.html minimale per debug manuale
           cat > gh-pages/previews/index.html <<EOF
           <!DOCTYPE html>
           <html>
