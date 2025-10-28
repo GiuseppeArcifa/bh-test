@@ -8,25 +8,17 @@ on:
 
 permissions: {}
 
-env:
-  # Cambia se il workflow di build ha un nome diverso
-  BUILD_WORKFLOW_NAME: Build Plugin
-  # Cambia se l'artifact ha un nome diverso
-  ARTIFACT_NAME_FALLBACK: bluehost-wordpress-plugin
-
 jobs:
-  deploy-preview:
+  playground-preview:
     runs-on: ubuntu-latest
 
-    # Se è un commento, esegui solo se l'issue è una PR
     if: github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && github.event.issue.pull_request)
 
     permissions:
       contents: read
-      actions: read
+      pull-requests: write
       pages: write
       id-token: write
-      pull-requests: write
 
     concurrency:
       group: pages
@@ -37,9 +29,6 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
-
       - name: Resolve PR context (number/branch/commit)
         id: ctx
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -53,8 +42,8 @@ jobs:
               branch   = context.payload.pull_request.head.ref;
               commit   = context.payload.pull_request.head.sha.slice(0,7);
             } else {
-              // issue_comment
               prNumber = context.payload.issue.number;
+              
               const { data: pr } = await github.rest.pulls.get({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -67,68 +56,96 @@ jobs:
             core.setOutput('number', prNumber.toString());
             core.setOutput('branch', branch);
             core.setOutput('commit', commit);
-      
 
-      - name: Find latest successful "Build Plugin" run for this branch
-        id: find_run
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          ref: ${{ steps.ctx.outputs.branch }}
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@bf6b4fbd49ca58e4608c9c89fba0b8d90bd2a39f  # v2.35.5
+        with:
+          php-version: '8.1'
+          coverage: none
+          tools: composer, cs2pr
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Setup workflow context
+        id: workflow
+        working-directory: ${{ runner.temp }}
         env:
-          BRANCH: ${{ steps.ctx.outputs.branch }}
-          WORKFLOW_NAME: ${{ env.BUILD_WORKFLOW_NAME }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const branch = process.env.BRANCH;
-            const WORKFLOW_NAME = process.env.WORKFLOW_NAME;
+          PLUGIN_NAME: ${{ vars.PLUGIN_NAME }}
+        run: |
+          mkdir dist
+          echo "DIST=${PWD}/dist" >> "$GITHUB_OUTPUT"
+          echo "PACKAGE=$PLUGIN_NAME" >> "$GITHUB_OUTPUT"
 
-            const { data } = await github.rest.actions.listWorkflowRunsForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              branch,
-              event: 'pull_request',
-              status: 'success',
-              per_page: 50,
-            });
+      - name: Install PHP Dependencies
+        run: composer install --no-progress --no-dev --optimize-autoloader --prefer-dist
 
-            const run = data.workflow_runs.find(r => r.name === WORKFLOW_NAME);
-            if (!run) {
-              core.setFailed(`❌ No successful "${WORKFLOW_NAME}" run found on branch ${branch}.`);
-              return;
-            }
+      - name: NPM Install
+        run: npm install --legacy-peer-deps
 
-            core.setOutput('run_id', run.id.toString());
-            core.setOutput('run_name', run.name);
-            core.setOutput('head_sha', run.head_sha.slice(0,7));
-            core.info(`✅ Found successful build run #${run.id} (${run.name}) for branch ${branch}`);
-      
+      - name: Build JavaScript
+        run: npm run build
 
-      - name: Download build artifact
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
-        with:
-          name: ${{ vars.PLUGIN_NAME || env.ARTIFACT_NAME_FALLBACK }}
-          path: ./artifact
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ steps.find_run.outputs.run_id }}
+      - name: Prepare files
+        env:
+          DIST: ${{ steps.workflow.outputs.DIST }}
+        run: |
+          rsync -r --include-from=.distinclude --exclude-from=.distignore . "$DIST"
 
-      - name: Prepare zip for Pages
+      - name: List dist files (debug)
+        working-directory: ${{ steps.workflow.outputs.DIST }}
+        run: find .
+
+      - name: Prepare plugin zip for GitHub Pages
         id: prepare
+        env:
+          DIST: ${{ steps.workflow.outputs.DIST }}
+          PR_NUMBER: ${{ steps.ctx.outputs.number }}
         run: |
           set -euo pipefail
 
           mkdir -p gh-pages/previews
 
-          PR_NUM="${{ steps.ctx.outputs.number }}"
+          PR_NUM="$PR_NUMBER"
           ZIP_NAME="bluehost-pr-${PR_NUM}.zip"
 
-          cd artifact
-          zip -r -9 "../gh-pages/previews/${ZIP_NAME}" .
-          cd ..
+          cat > excludes.txt <<'EOF'
+          .env
+          .env.*
+          .npmrc
+          .yarnrc*
+          auth.json
+          composer.auth.json
+          wp-config.php
+          .git*
+          **/.git/**
+          **/node_modules/**
+          **/.github/**
+          **/.vscode/**
+          **/.idea/**
+          EOF
+
+          cd "$DIST"
+          zip -r -9 "../${ZIP_NAME}" . -x@../excludes.txt
+          cd -
+
+          mv "${DIST}/../${ZIP_NAME}" "gh-pages/previews/${ZIP_NAME}"
 
           SIZE=$(du -h "gh-pages/previews/${ZIP_NAME}" | cut -f1)
 
           echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
           echo "zip_size=${SIZE}" >> "$GITHUB_OUTPUT"
 
+          # index.html minimale per debug manuale
           cat > gh-pages/previews/index.html <<EOF
           <!DOCTYPE html>
           <html>
@@ -187,22 +204,26 @@ jobs:
             const zipSize  = process.env.ZIP_SIZE;
             const commit   = process.env.COMMIT;
             const branch   = process.env.BRANCH;
-
-            const base = process.env.PAGES_URL.replace(/\/+$/, '');
-            const zipUrl = `${base}/previews/${zipName}`;
+            const baseUrl  = process.env.PAGES_URL.replace(/\/+$/, '');
+            const zipUrl   = `${baseUrl}/previews/${zipName}`;
 
             const blueprint = {
               landingPage: "/wp-admin/admin.php?page=bluehost#/home",
               preferredVersions: { php: "8.1", wp: "latest" },
               login: true,
-              steps: [{
-                step: "installPlugin",
-                pluginData: { resource: "url", url: zipUrl },
-                options: { activate: true }
-              }]
+              steps: [
+                {
+                  step: "installPlugin",
+                  pluginData: { resource: "url", url: zipUrl },
+                  options: { activate: true }
+                }
+              ]
             };
 
-            const blueprintBase64 = Buffer.from(JSON.stringify(blueprint)).toString('base64');
+            const blueprintBase64 = Buffer
+              .from(JSON.stringify(blueprint))
+              .toString('base64');
+
             const playgroundUrl = `https://playground.wordpress.net/#${blueprintBase64}`;
 
             const commentMeta = '<!-- playground-preview-link -->';
@@ -212,11 +233,16 @@ jobs:
 
             [**▶️ Launch Preview in Playground**](${playgroundUrl})
 
+            _This spins up a fresh WordPress-in-browser, installs this PR's plugin build, and drops you straight into the Bluehost screen._
+
+            ---
             **Preview Details**
-            - 📦 \`${zipName}\` (${zipSize})
+            - 📦 Build ZIP: \`${zipName}\` (${zipSize})
             - 🗂️ Branch: \`${branch}\`
             - 📝 Commit: \`${commit}\`
-            - 🔗 [Direct Download](${zipUrl})
+            - 🔗 [Direct Download of ZIP](${zipUrl})
+
+            ⚠ Every new commit / comment on this PR overwrites the preview ZIP for this PR number.
             `;
 
             const { data: comments } = await github.rest.issues.listComments({
@@ -224,6 +250,7 @@ jobs:
               repo: context.repo.repo,
               issue_number: prNumber,
             });
+
             const existing = comments.find(c => c.body && c.body.includes(commentMeta));
             if (existing) {
               await github.rest.issues.updateComment({
