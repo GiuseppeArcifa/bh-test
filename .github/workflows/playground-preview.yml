@@ -1,31 +1,22 @@
-name: WordPress Playground Preview
+name: WordPress Playground Preview (PR & Comments)
 
 on:
-  workflow_run:
-    workflows: [ "Build Plugin" ]
-    types: [ completed ]
-
-permissions: {}
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
-  deploy-preview:
-    name: Deploy to GitHub Pages and Create Playground Link
+  playground-preview:
     runs-on: ubuntu-latest
-
-    if: |
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+    # if: github.event.pull_request.head.repo.fork == false
 
     permissions:
       contents: read
-      actions: read
+      pull-requests: write
       pages: write
       id-token: write
-      pull-requests: write
 
     concurrency:
-      group: "pages"
+      group: pages-${{ github.event.pull_request.number }}
       cancel-in-progress: true
 
     environment:
@@ -33,55 +24,125 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-        with:
-          persist-credentials: false
-
-      - name: Get PR number and metadata
-        id: pr
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+      - name: Resolve PR context (number/branch/commit)
+        id: ctx
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { data: pullRequests } = await github.rest.pulls.list({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              head: `${context.repo.owner}:${github.event.workflow_run.head_branch}`
-            });
-            if (pullRequests.length === 0) {
-              core.setFailed('No open PR found for this branch');
-              return;
-            }
-            const pr = pullRequests[0];
-            core.setOutput('number', pr.number);
-            core.setOutput('branch', github.event.workflow_run.head_branch);
-            core.setOutput('commit', github.event.workflow_run.head_sha.slice(0, 7));
+            let prNumber, branch, sha, commit;
 
-      - name: Download artifact from workflow run
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+            if (context.eventName === 'pull_request') {
+              prNumber = context.payload.pull_request.number;
+              branch   = context.payload.pull_request.head.ref;
+              commit   = context.payload.pull_request.head.sha.slice(0,7);
+            } else {
+              prNumber = context.payload.issue.number;
+              
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              branch = pr.head.ref;
+              sha    = pr.head.sha;
+              commit = pr.head.sha.slice(0,7);
+            }
+
+            core.setOutput('number', prNumber.toString());
+            core.setOutput('branch', branch);
+            core.setOutput('sha', sha);
+            core.setOutput('commit', commit);
+
+      - name: Checkout
+        uses: actions/checkout@v5
         with:
-          name: ${{ vars.PLUGIN_NAME || 'bluehost-wordpress-plugin' }}
-          path: ./artifact
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@bf6b4fbd49ca58e4608c9c89fba0b8d90bd2a39f  # v2.35.5
+        with:
+          php-version: '8.1'
+          coverage: none
+          tools: composer, cs2pr
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Setup workflow context
+        id: workflow
+        working-directory: ${{ runner.temp }}
+        env:
+          PLUGIN_NAME: ${{ vars.PLUGIN_NAME }}
+        run: |
+          mkdir dist
+          echo "DIST=${PWD}/dist" >> "$GITHUB_OUTPUT"
+          echo "PACKAGE=$PLUGIN_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Install PHP Dependencies
+        run: composer install --no-progress --no-dev --optimize-autoloader --prefer-dist
+
+      - name: NPM Install
+        run: npm install --legacy-peer-deps
+
+      - name: Build JavaScript
+        run: npm run build
+
+      - name: Prepare files
+        env:
+          DIST: ${{ steps.workflow.outputs.DIST }}
+        run: |
+          rsync -r --include-from=.distinclude --exclude-from=.distignore . "$DIST"
+
+      - name: List dist files (debug)
+        env:
+          DIST: ${{ steps.workflow.outputs.DIST }}
+        run: |
+          set -euo pipefail
+          cd -- "$DIST"
+          find .
 
       - name: Prepare plugin zip for GitHub Pages
         id: prepare
         env:
-          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          DIST: ${{ steps.workflow.outputs.DIST }}
+          PR_NUMBER: ${{ steps.ctx.outputs.number }}
         run: |
           set -euo pipefail
 
           mkdir -p gh-pages/previews
 
-          PR_NUM="${PR_NUMBER}"
+          PR_NUM="$PR_NUMBER"
           ZIP_NAME="bluehost-pr-${PR_NUM}.zip"
 
-          cd artifact
-          zip -r -9 "../gh-pages/previews/${ZIP_NAME}" .
-          cd ..
+          # Crea excludes.txt DENTRO la cartella DIST
+          cat > "$DIST/excludes.txt" <<'EOF'
+          .env
+          .env.*
+          .npmrc
+          .yarnrc*
+          auth.json
+          composer.auth.json
+          wp-config.php
+          .git*
+          **/.git/**
+          **/node_modules/**
+          **/.github/**
+          **/.vscode/**
+          **/.idea/**
+          EOF
+
+          # Ora zippa da dentro DIST usando il file excludes.txt locale
+          cd "$DIST"
+          zip -r -9 "../${ZIP_NAME}" . -x@excludes.txt
+          cd -
+
+          # Sposta lo zip appena creato in gh-pages/previews
+          mv "${DIST}/../${ZIP_NAME}" "gh-pages/previews/${ZIP_NAME}"
 
           SIZE=$(du -h "gh-pages/previews/${ZIP_NAME}" | cut -f1)
 
@@ -116,24 +177,53 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          enablement: true
+      - name: Cleanup previous github-pages artifacts for this run
+        id: cleanup_pages_artifacts
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RUN_ID: ${{ github.run_id }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const runId = process.env.RUN_ID;
+            
+            const { data } = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: runId,
+            });
+            
+            for (const artifact of data.artifacts) {
+              if (artifact.name === 'github-pages') {
+                await github.rest.actions.deleteArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id,
+                });
+                core.info(`Deleted old github-pages artifact ${artifact.id}`);
+              }
+            }
 
-      - name: Upload to GitHub Pages
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3.0.1
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: ./gh-pages
 
       - name: Deploy to GitHub Pages
         id: deploy
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4.0.5
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
 
-      - name: Create WordPress Playground preview link
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+      - name: Comment Playground link on PR
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_NUMBER: ${{ steps.ctx.outputs.number }}
           ZIP_NAME: ${{ steps.prepare.outputs.zip_name }}
           ZIP_SIZE: ${{ steps.prepare.outputs.zip_size }}
-          COMMIT: ${{ steps.pr.outputs.commit }}
-          BRANCH: ${{ steps.pr.outputs.branch }}
+          COMMIT: ${{ steps.ctx.outputs.commit }}
+          BRANCH: ${{ steps.ctx.outputs.branch }}
           PAGES_URL: ${{ steps.deploy.outputs.page_url }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -143,9 +233,8 @@ jobs:
             const zipSize  = process.env.ZIP_SIZE;
             const commit   = process.env.COMMIT;
             const branch   = process.env.BRANCH;
-
-            const base = process.env.PAGES_URL.replace(/\/+$/, '');
-            const zipUrl = `${base}/previews/${zipName}`;
+            const baseUrl  = process.env.PAGES_URL.replace(/\/+$/, '');
+            const zipUrl   = `${baseUrl}/previews/${zipName}`;
 
             const blueprint = {
               landingPage: "/wp-admin/admin.php?page=bluehost#/home",
@@ -160,38 +249,29 @@ jobs:
               ]
             };
 
-            const blueprintBase64 = Buffer.from(JSON.stringify(blueprint)).toString('base64');
+            const blueprintBase64 = Buffer
+              .from(JSON.stringify(blueprint))
+              .toString('base64');
+
             const playgroundUrl = `https://playground.wordpress.net/#${blueprintBase64}`;
 
             const commentMeta = '<!-- playground-preview-link -->';
-            const commentBody = `
+            const body = `
             ${commentMeta}
             ## 🎮 WordPress Playground Preview
 
             [**▶️ Launch Preview in Playground**](${playgroundUrl})
 
-            _One-click testing in your browser! The plugin will be automatically installed and activated from this PR's latest build._
+            _This spins up a fresh WordPress-in-browser, installs this PR's plugin build, and drops you straight into the Bluehost screen._
 
             ---
-
-            **Preview Details:**
-            - 📦 Build: \`${zipName}\` (${zipSize})
+            **Preview Details**
+            - 📦 Build ZIP: \`${zipName}\` (${zipSize})
             - 🗂️ Branch: \`${branch}\`
-            - 📝 Latest Commit: \`${commit}\`
-            - 🔗 [Direct Download](${zipUrl})
+            - 📝 Commit: \`${commit}\`
+            - 🔗 [Direct Download of ZIP](${zipUrl})
 
-            <details>
-            <summary>ℹ️ About Playground Previews</summary>
-
-            This preview runs your plugin in a complete WordPress environment directly in your browser using WordPress Playground. No local setup required!
-
-            **Features:**
-            - ✅ PHP 8.1 & latest WordPress
-            - ✅ Plugin auto-installed & activated
-            - ✅ Lands on the Bluehost admin page
-            - ✅ Pre-authenticated as admin
-            - ✅ Session-persistent changes (in browser)
-            </details>
+            ⚠ Every new commit / comment on this PR overwrites the preview ZIP for this PR number.
             `;
 
             const { data: comments } = await github.rest.issues.listComments({
@@ -206,15 +286,13 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 comment_id: existing.id,
-                body: commentBody,
+                body,
               });
             } else {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: prNumber,
-                body: commentBody,
+                body,
               });
             }
-
-            core.info(`Playground URL: ${playgroundUrl}`);
