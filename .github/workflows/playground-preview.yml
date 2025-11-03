@@ -16,7 +16,7 @@ jobs:
       id-token: write
 
     concurrency:
-      group: pages
+      group: pages-${{ github.event.pull_request.number }}
       cancel-in-progress: true
 
     environment:
