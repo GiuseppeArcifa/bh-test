@@ -83,7 +83,7 @@ const Home = () => {
 									'wp-plugin-bluehost'
 							  ) }
 					</Title>
-					Another test
+					Another test!!
 				</span>
 				{ siteKind === 'store' && (
 					// Store details button only on store sites
