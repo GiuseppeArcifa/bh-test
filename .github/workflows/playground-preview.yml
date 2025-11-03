@@ -99,8 +99,12 @@ jobs:
           rsync -r --include-from=.distinclude --exclude-from=.distignore . "$DIST"
 
       - name: List dist files (debug)
-        working-directory: ${{ steps.workflow.outputs.DIST }}
-        run: find .
+        env:
+          DIST: ${{ steps.workflow.outputs.DIST }}
+        run: |
+          set -euo pipefail
+          cd "$DIST"
+          find .
 
       - name: Prepare plugin zip for GitHub Pages
         id: prepare
