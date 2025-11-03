@@ -82,7 +82,6 @@ const Home = () => {
 									'Congrats, your website is live!',
 									'wp-plugin-bluehost'
 							  ) }
-						 ! Hola Ivan!!
 					</Title>
 				</span>
 				{ siteKind === 'store' && (
