@@ -57,7 +57,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ steps.ctx.outputs.sha }}
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Setup PHP
@@ -103,7 +103,7 @@ jobs:
           DIST: ${{ steps.workflow.outputs.DIST }}
         run: |
           set -euo pipefail
-          cd "$DIST"
+          cd -- "$DIST"
           find .
 
       - name: Prepare plugin zip for GitHub Pages
