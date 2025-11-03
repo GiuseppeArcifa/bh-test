@@ -7,7 +7,7 @@ on:
 jobs:
   playground-preview:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.fork == false
+    #if: github.event.pull_request.head.repo.fork == false
 
     permissions:
       contents: read
