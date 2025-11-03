@@ -30,7 +30,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            let prNumber, branch, commit;
+            let prNumber, branch, sha, commit;
 
             if (context.eventName === 'pull_request') {
               prNumber = context.payload.pull_request.number;
@@ -45,17 +45,19 @@ jobs:
                 pull_number: prNumber,
               });
               branch = pr.head.ref;
+              sha    = pr.head.sha;
               commit = pr.head.sha.slice(0,7);
             }
 
             core.setOutput('number', prNumber.toString());
             core.setOutput('branch', branch);
+            core.setOutput('sha', sha);
             core.setOutput('commit', commit);
 
       - name: Checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        uses: actions/checkout@v5
         with:
-          ref: ${{ steps.ctx.outputs.branch }}
+          ref: ${{ steps.ctx.outputs.sha }}
           persist-credentials: false
 
       - name: Setup PHP
